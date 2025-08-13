@@ -21,16 +21,19 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-# Default configuration
+# Default configuration - Enhanced for better accuracy
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 8192,
+    "max_tokens": 16384,  # IMPROVEMENT 1: Doubled token limit for more comprehensive analysis
     "temperature": 0.3,
-    "max_file_size_kb": 800,
-    "max_workers": 2,
+    "max_file_size_kb": 2000,  # IMPROVEMENT 1: Increased file size limit (800KB -> 2MB)
+    "max_workers": 1,  # IMPROVEMENT 2: Reduced workers to avoid rate limiting
     "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
+    "chunk_size_lines": 200,  # IMPROVEMENT 3: Chunk large files for analysis
+    "max_retries": 3,  # IMPROVEMENT 2: Add retry logic
+    "retry_delay": 2,  # IMPROVEMENT 2: Base delay in seconds
 }
 
 # Review perspectives - focused and practical
@@ -150,7 +153,7 @@ class LLMReviewer:
         return urllib3.PoolManager()
 
     def review(self, code: str, perspective: Dict, filename: str) -> Dict:
-        """Send code to LLM and parse response"""
+        """Send code to LLM and parse response with retry logic"""
         prompt = f"{perspective['prompt']}\n\nFile: {filename}\nCode:\n```\n{code}\n```"
 
         headers = {
@@ -168,29 +171,50 @@ class LLMReviewer:
             }
         )
 
-        try:
-            response = self.session.request(
-                "POST", CONFIG["api_url"], headers=headers, body=body, timeout=30
-            )
+        # IMPROVEMENT 2: Retry logic with exponential backoff
+        for attempt in range(CONFIG["max_retries"]):
+            try:
+                response = self.session.request(
+                    "POST", CONFIG["api_url"], headers=headers, body=body, timeout=60  # Increased timeout
+                )
 
-            if response.status != 200:
-                raise Exception(f"API error: {response.status}")
+                if response.status == 200:
+                    data = json.loads(response.data)
+                    content = data["content"][0]["text"]
 
-            data = json.loads(response.data)
-            content = data["content"][0]["text"]
+                    # Extract JSON from response
+                    json_match = re.search(r"\{.*\}", content, re.DOTALL)
+                    if json_match:
+                        return json.loads(json_match.group())
 
-            # Extract JSON from response
-            json_match = re.search(r"\{.*\}", content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
+                    return {"issues": [], "summary": "Failed to parse", "score": 50}
+                
+                elif response.status == 529:  # Rate limited
+                    if attempt < CONFIG["max_retries"] - 1:
+                        delay = CONFIG["retry_delay"] * (2 ** attempt)  # Exponential backoff
+                        print(f"Rate limited, retrying in {delay}s (attempt {attempt + 1})", file=sys.stderr)
+                        import time
+                        time.sleep(delay)
+                        continue
+                    else:
+                        return {"issues": [], "summary": f"API rate limited after {CONFIG['max_retries']} attempts", "score": 50}
+                else:
+                    raise Exception(f"API error: {response.status}")
 
-            return {"issues": [], "summary": "Failed to parse", "score": 50}
+            except json.JSONDecodeError:
+                return {"issues": [], "summary": "Invalid JSON response", "score": 50}
+            except Exception as e:
+                if attempt < CONFIG["max_retries"] - 1:
+                    delay = CONFIG["retry_delay"] * (2 ** attempt)
+                    print(f"Review error: {e}, retrying in {delay}s", file=sys.stderr)
+                    import time
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"Review error after {CONFIG['max_retries']} attempts: {e}", file=sys.stderr)
+                    return {"issues": [], "summary": str(e), "score": 50}
 
-        except json.JSONDecodeError:
-            return {"issues": [], "summary": "Invalid JSON response", "score": 50}
-        except Exception as e:
-            print(f"Review error: {e}", file=sys.stderr)
-            return {"issues": [], "summary": str(e), "score": 50}
+        return {"issues": [], "summary": "All retry attempts failed", "score": 50}
 
 
 class Cache:
@@ -247,7 +271,7 @@ class CodeReviewEngine:
         self.github = GitHubHelper()
 
     def review_file(self, filepath: str, perspective_key: str) -> Dict:
-        """Review a single file from one perspective"""
+        """Review a single file from one perspective with chunking support"""
         path = Path(filepath)
         if not path.exists():
             return {"error": f"File not found: {filepath}"}
@@ -259,9 +283,18 @@ class CodeReviewEngine:
         except Exception as e:
             return {"error": f"Cannot read {filepath}: {e}"}
 
-        # Check size limit
+        # IMPROVEMENT 3: Handle large files with chunking
+        lines = content.split('\n')
+        chunk_size = CONFIG["chunk_size_lines"]
+        
+        if len(lines) > chunk_size:
+            print(f"Large file detected ({len(lines)} lines), using chunking approach", file=sys.stderr)
+            return self._review_file_chunked(filepath, lines, perspective_key)
+        
+        # Check size limit for single chunk
         if len(content) > CONFIG["max_file_size_kb"] * 1024:
             content = content[: CONFIG["max_file_size_kb"] * 1024]
+            print(f"File truncated to {CONFIG['max_file_size_kb']}KB", file=sys.stderr)
 
         # Check cache
         cached = self.cache.get(content, perspective_key)
@@ -280,6 +313,61 @@ class CodeReviewEngine:
         self.cache.set(content, perspective_key, result)
 
         return result
+
+    def _review_file_chunked(self, filepath: str, lines: List[str], perspective_key: str) -> Dict:
+        """Review large file in chunks and aggregate results"""
+        chunk_size = CONFIG["chunk_size_lines"]
+        chunks = [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
+        
+        all_issues = []
+        all_scores = []
+        summaries = []
+        
+        perspective = PERSPECTIVES[perspective_key]
+        
+        for i, chunk_lines in enumerate(chunks):
+            chunk_content = '\n'.join(chunk_lines)
+            chunk_id = f"{filepath}:chunk-{i+1}"
+            
+            print(f"Analyzing chunk {i+1}/{len(chunks)} of {filepath}", file=sys.stderr)
+            
+            # Check cache for chunk
+            cached = self.cache.get(chunk_content, perspective_key)
+            if cached:
+                chunk_result = cached
+            else:
+                # Review chunk
+                chunk_result = self.reviewer.review(chunk_content, perspective, chunk_id)
+                self.cache.set(chunk_content, perspective_key, chunk_result)
+            
+            # Aggregate results
+            if chunk_result.get("issues"):
+                for issue in chunk_result["issues"]:
+                    # Adjust line numbers for chunk offset
+                    if issue.get("line"):
+                        issue["line"] = issue["line"] + (i * chunk_size)
+                    all_issues.append(issue)
+            
+            if chunk_result.get("score"):
+                all_scores.append(chunk_result["score"])
+            
+            if chunk_result.get("summary"):
+                summaries.append(f"Chunk {i+1}: {chunk_result['summary']}")
+        
+        # Aggregate final result
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 50
+        combined_summary = " | ".join(summaries) if summaries else "Chunked analysis completed"
+        
+        return {
+            "issues": all_issues,
+            "summary": combined_summary,
+            "score": avg_score,
+            "perspective": perspective_key,
+            "file": filepath,
+            "timestamp": datetime.now().isoformat(),
+            "chunked": True,
+            "chunks_analyzed": len(chunks)
+        }
 
     def review_files(
         self, files: List[str], perspectives: List[str] = None
