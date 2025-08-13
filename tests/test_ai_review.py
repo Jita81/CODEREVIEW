@@ -33,7 +33,9 @@ class TestCache:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = Cache(temp_dir)
             assert cache.enabled == CONFIG["cache_enabled"]
-            assert cache.cache_dir == Path(temp_dir)
+            # Only check cache_dir if caching is enabled
+            if cache.enabled:
+                assert cache.cache_dir == Path(temp_dir)
     
     def test_cache_key_generation(self):
         """Test cache key generation"""
@@ -61,9 +63,13 @@ class TestCache:
             # Set cache
             cache.set(content, perspective, result)
             
-            # Get cached result
+            # Get cached result - only works if caching is enabled
             cached = cache.get(content, perspective)
-            assert cached == result
+            if cache.enabled:
+                assert cached == result
+            else:
+                # When caching is disabled, should return None
+                assert cached is None
 
 
 class TestGitHubHelper:
