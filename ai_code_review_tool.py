@@ -345,7 +345,7 @@ class CodeReviewEngine:
             "average_score": round(avg_score, 1),
             "total_issues": len(all_issues),
             "high_severity_issues": high_severity,
-            "issues": all_issues[:20],  # Top 20 issues
+            "issues": all_issues,  # Show all issues
             "summaries": summaries,
             "file_count": len(set(r.get("file") for r in valid_results)),
             "perspective_count": len(set(r.get("perspective") for r in valid_results)),
@@ -374,9 +374,7 @@ class OutputFormatter:
 
         if report["high_severity_issues"] > 0:
             comment += "### 🔴 High Severity Issues\n\n"
-            high_issues = [i for i in report["issues"] if i.get("severity") == "HIGH"][
-                :5
-            ]
+            high_issues = [i for i in report["issues"] if i.get("severity") == "HIGH"]
             for issue in high_issues:
                 comment += f"- **{issue['file']}**"
                 if issue.get("line"):
@@ -385,13 +383,49 @@ class OutputFormatter:
                 if issue.get("fix"):
                     comment += f"  - 💡 *{issue['fix']}*\n"
 
-        # Add summaries
+        # Show all medium severity issues
+        medium_issues = [i for i in report["issues"] if i.get("severity") == "MEDIUM"]
+        if medium_issues:
+            comment += "\n### ⚠️ Medium Severity Issues\n\n"
+            for issue in medium_issues:
+                comment += f"- **{issue['file']}**"
+                if issue.get("line"):
+                    comment += f" (line {issue['line']})"
+                comment += f"\n  - {issue['message']}\n"
+                if issue.get("fix"):
+                    comment += f"  - 💡 *{issue['fix']}*\n"
+
+        # Show all low severity issues
+        low_issues = [i for i in report["issues"] if i.get("severity") == "LOW"]
+        if low_issues:
+            comment += "\n### ℹ️ Low Severity Issues\n\n"
+            for issue in low_issues:
+                comment += f"- **{issue['file']}**"
+                if issue.get("line"):
+                    comment += f" (line {issue['line']})"
+                comment += f"\n  - {issue['message']}\n"
+                if issue.get("fix"):
+                    comment += f"  - 💡 *{issue['fix']}*\n"
+
+        # Add summaries grouped by file
         if report.get("summaries"):
-            comment += "\n### 📊 Review Summaries\n\n"
-            for summary in report["summaries"][:3]:
-                comment += (
-                    f"- **{summary['perspective'].title()}:** {summary['summary']}\n"
-                )
+            comment += "\n### 📊 Review Summaries by File\n\n"
+            # Group summaries by file
+            file_summaries = {}
+            for summary in report["summaries"]:
+                file = summary.get('file', 'unknown')
+                if file not in file_summaries:
+                    file_summaries[file] = {}
+                file_summaries[file][summary['perspective']] = summary['summary']
+            
+            # Display summaries organized by file
+            for file, perspectives in file_summaries.items():
+                if any(perspectives.values()):  # Only show files with valid summaries
+                    comment += f"#### {file}\n"
+                    for perspective, summary in perspectives.items():
+                        if summary and not summary.startswith("API error"):
+                            comment += f"- **{perspective.title()}:** {summary}\n"
+                    comment += "\n"
 
         comment += f"\n---\n*Review completed at {report['timestamp']} by @{context.get('actor', 'ai-reviewer')}*"
 
