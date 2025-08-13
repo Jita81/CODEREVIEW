@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-AI Code Review Tool - Streamlined GitHub Integration Version
-Fully functional tool optimized for GitHub Actions with multi-perspective reviews
+AI Code Review Tool - Enhanced GitHub Integration Version
+
+A production-ready AI-powered code review tool that provides comprehensive 
+security, performance, and quality analysis with enhanced feedback showing 
+ALL identified issues (not just a limited subset).
+
+Optimized for GitHub Actions with multi-perspective reviews and intelligent caching.
 """
 
 import os
