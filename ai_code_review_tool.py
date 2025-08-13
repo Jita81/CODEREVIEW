@@ -29,7 +29,7 @@ CONFIG = {
     "temperature": 0.3,
     "max_file_size_kb": 2000,  # ROUND 1: Increased file size limit (800KB -> 2MB)
     "max_workers": 1,  # ROUND 1: Reduced workers to avoid rate limiting
-    "cache_enabled": False,  # Disabled for testing to get fresh results each run
+    "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
     "chunk_size_lines": 200,  # ROUND 1: Chunk large files for analysis
     "max_retries": 3,  # ROUND 1: Add retry logic
