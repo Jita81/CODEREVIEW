@@ -21,20 +21,20 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-# Default configuration - Round 2: Maximum accuracy optimization
+# Default configuration - Round 2B: Balanced optimization for maximum success
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 32768,  # ROUND 2-1: Maxed out token limit for deepest analysis
-    "temperature": 0.1,  # ROUND 2-1: Lower temperature for more focused analysis
-    "max_file_size_kb": 3000,  # ROUND 2-1: Further increased file size limit
+    "max_tokens": 20480,  # ROUND 2B: Sweet spot - high but not overwhelming
+    "temperature": 0.2,  # ROUND 2B: Balanced temperature for focused analysis
+    "max_file_size_kb": 2500,  # ROUND 2B: Balanced file size limit
     "max_workers": 1,  # Sequential processing to avoid rate limits
     "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
-    "chunk_size_lines": 100,  # ROUND 2-3: Smaller chunks for more focused analysis
-    "max_retries": 5,  # ROUND 2-2: More retry attempts
-    "retry_delay": 3,  # ROUND 2-2: Longer base delay
-    "sequential_perspectives": True,  # ROUND 2-2: Process perspectives one by one
+    "chunk_size_lines": 150,  # ROUND 2B: Balanced chunk size for comprehensive analysis
+    "max_retries": 4,  # ROUND 2B: Balanced retry attempts
+    "retry_delay": 5,  # ROUND 2B: Longer delays to respect rate limits
+    "sequential_perspectives": True,  # Keep sequential processing
 }
 
 # Review perspectives - focused and practical
@@ -425,9 +425,9 @@ class CodeReviewEngine:
                         result = self.review_file(filepath, perspective)
                         results.append(result)
                         
-                        # Add delay between API calls to be respectful
+                        # Add longer delay between API calls to avoid rate limits
                         import time
-                        time.sleep(1)
+                        time.sleep(3)  # Increased delay for stability
                         
                     except Exception as e:
                         print(f"Review failed for {filepath} ({perspective}): {e}", file=sys.stderr)
