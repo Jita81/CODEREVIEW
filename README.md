@@ -10,11 +10,13 @@ An intelligent, AI-powered code review tool that integrates seamlessly with GitH
 
 - **Multi-Perspective Analysis**: Reviews code from security, performance, and quality perspectives
 - **Latest AI Model**: Uses Claude 4.1 Sonnet with 60k token capacity for comprehensive analysis
+- **Enhanced Feedback**: Shows ALL identified issues (not just 5) with severity categorization
 - **GitHub Actions Integration**: Automatic reviews on pull requests
 - **Intelligent Caching**: Reduces API costs and review time
 - **Parallel Processing**: Fast reviews for large codebases
 - **Configurable Thresholds**: Enforce quality standards
 - **Multiple Output Formats**: GitHub comments, JSON, Markdown reports
+- **Production Ready**: Enterprise-grade with comprehensive error handling and monitoring
 
 ## 🎯 Quick Start
 
