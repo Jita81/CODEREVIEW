@@ -21,100 +21,75 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-# Default configuration - Round 3: Conservative optimization for reliable high accuracy
+# Default configuration - ROUND 1 PROVEN: Best performing setup (28% detection)
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 16384,  # ROUND 3: Return to proven working token limit
-    "temperature": 0.3,  # ROUND 3: Standard temperature that worked
-    "max_file_size_kb": 2000,  # ROUND 3: Conservative file size
-    "max_workers": 1,  # Sequential processing
-    "cache_enabled": True,
+    "max_tokens": 16384,  # ROUND 1: Doubled token limit for comprehensive analysis
+    "temperature": 0.3,
+    "max_file_size_kb": 2000,  # ROUND 1: Increased file size limit (800KB -> 2MB)
+    "max_workers": 1,  # ROUND 1: Reduced workers to avoid rate limiting
+    "cache_enabled": False,  # Disabled for testing to get fresh results each run
     "cache_dir": ".ai_review_cache",
-    "chunk_size_lines": 120,  # ROUND 3: Smaller chunks for thorough analysis
-    "max_retries": 3,  # ROUND 3: Conservative retries
-    "retry_delay": 8,  # ROUND 3: Long delays between calls
-    "sequential_perspectives": True,  # Keep sequential processing
+    "chunk_size_lines": 200,  # ROUND 1: Chunk large files for analysis
+    "max_retries": 3,  # ROUND 1: Add retry logic
+    "retry_delay": 2,  # ROUND 1: Base delay in seconds
+    "sequential_perspectives": False,  # ROUND 1: Original parallel processing
 }
 
 # Review perspectives - focused and practical
 PERSPECTIVES = {
     "security": {
         "name": "Security Scanner",
-        "prompt": """Analyze this code for ALL security vulnerabilities. Be thorough and find every issue:
+        "prompt": """Analyze this code for security vulnerabilities. Focus on:
+- Input validation and sanitization
+- Authentication/authorization issues  
+- SQL injection, XSS, CSRF risks
+- Sensitive data exposure
+- Dependency vulnerabilities
 
-CRITICAL CHECKS:
-- SQL/Command/XSS injection vulnerabilities
-- Hardcoded credentials, API keys, secrets  
-- Weak authentication, authorization bypasses
-- Input validation failures, missing sanitization
-- Insecure deserialization, file handling
-- Cryptographic weaknesses (weak hashing, etc.)
-- Information disclosure in errors/logs
-- CSRF, session management issues
-- Path traversal, directory listing
-
-Examine every line for security flaws. Flag all vulnerabilities regardless of size.
-
-Format as JSON:
+Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<solution>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
   ],
-  "summary": "<security assessment>",
+  "summary": "<brief overall assessment>",
   "score": <0-100>
 }""",
     },
     "quality": {
         "name": "Quality Checker",
-        "prompt": """Analyze this code for ALL quality and maintainability issues. Find every problem:
+        "prompt": """Review this code for quality and maintainability. Focus on:
+- Code complexity and readability
+- Error handling
+- Documentation and comments
+- DRY/SOLID principles
+- Testing considerations
 
-KEY AREAS:
-- Code complexity, long methods, deep nesting
-- Error handling: missing try-catch, bare exceptions
-- Code smells: god objects, duplicate code, magic numbers
-- SOLID violations, poor separation of concerns
-- Missing documentation, unclear naming
-- Resource leaks: unclosed files, memory issues
-- Thread safety: race conditions, shared state
-- Testing problems: untestable code, poor coverage
-- Architecture issues: tight coupling, dependencies
-
-Examine every function and class. Report all quality improvements needed.
-
-Format as JSON:
+Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<improvement>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
   ],
-  "summary": "<quality assessment>",
+  "summary": "<brief overall assessment>",
   "score": <0-100>
 }""",
     },
     "performance": {
         "name": "Performance Analyzer",
-        "prompt": """Analyze this code for ALL performance issues and bottlenecks. Find every inefficiency:
+        "prompt": """Analyze this code for performance issues. Focus on:
+- Algorithm complexity
+- Database query efficiency
+- Memory usage
+- Caching opportunities
+- Resource leaks
 
-PERFORMANCE CHECKS:
-- Algorithm complexity: O(n²), O(2^n), nested loops
-- Data structure misuse: wrong collections, linear searches
-- Database problems: N+1 queries, missing indexes
-- Memory issues: leaks, excessive allocations
-- I/O bottlenecks: synchronous ops, no pooling
-- Missing caching: repeated calculations, calls
-- Resource leaks: unclosed connections, files
-- String inefficiencies: concatenation in loops
-- Blocking operations, thread contention
-- Expensive operations: regex, crypto, serialization
-
-Examine every loop and operation. Find all optimization opportunities.
-
-Format as JSON:
+Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<analysis>", "fix": "<optimization>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
   ],
-  "summary": "<performance assessment>",
+  "summary": "<brief overall assessment>",
   "score": <0-100>
 }""",
     },
@@ -414,9 +389,9 @@ class CodeReviewEngine:
                         result = self.review_file(filepath, perspective)
                         results.append(result)
                         
-                        # Add very long delay between API calls to avoid rate limits
+                        # Add delay between API calls to be respectful
                         import time
-                        time.sleep(8)  # Very conservative delay for stability
+                        time.sleep(1)
                         
                     except Exception as e:
                         print(f"Review failed for {filepath} ({perspective}): {e}", file=sys.stderr)
