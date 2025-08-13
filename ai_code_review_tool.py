@@ -21,19 +21,19 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-# Default configuration - Round 2B: Balanced optimization for maximum success
+# Default configuration - Round 3: Conservative optimization for reliable high accuracy
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 20480,  # ROUND 2B: Sweet spot - high but not overwhelming
-    "temperature": 0.2,  # ROUND 2B: Balanced temperature for focused analysis
-    "max_file_size_kb": 2500,  # ROUND 2B: Balanced file size limit
-    "max_workers": 1,  # Sequential processing to avoid rate limits
+    "max_tokens": 16384,  # ROUND 3: Return to proven working token limit
+    "temperature": 0.3,  # ROUND 3: Standard temperature that worked
+    "max_file_size_kb": 2000,  # ROUND 3: Conservative file size
+    "max_workers": 1,  # Sequential processing
     "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
-    "chunk_size_lines": 150,  # ROUND 2B: Balanced chunk size for comprehensive analysis
-    "max_retries": 4,  # ROUND 2B: Balanced retry attempts
-    "retry_delay": 5,  # ROUND 2B: Longer delays to respect rate limits
+    "chunk_size_lines": 120,  # ROUND 3: Smaller chunks for thorough analysis
+    "max_retries": 3,  # ROUND 3: Conservative retries
+    "retry_delay": 8,  # ROUND 3: Long delays between calls
     "sequential_perspectives": True,  # Keep sequential processing
 }
 
@@ -41,91 +41,80 @@ CONFIG = {
 PERSPECTIVES = {
     "security": {
         "name": "Security Scanner",
-        "prompt": """COMPREHENSIVE SECURITY ANALYSIS - Find ALL vulnerabilities, no matter how small.
+        "prompt": """Analyze this code for ALL security vulnerabilities. Be thorough and find every issue:
 
-Exhaustively analyze this code for security vulnerabilities. Look for EVERY possible issue:
-- Input validation failures (missing sanitization, weak validation)
-- Authentication/authorization bypasses and weaknesses
-- Injection attacks: SQL, command, LDAP, XPath, etc.
-- XSS vulnerabilities: reflected, stored, DOM-based
-- CSRF, clickjacking, and session management issues
-- Sensitive data exposure in logs, errors, or storage
-- Cryptographic weaknesses and hardcoded secrets
-- Insecure deserialization and file handling
-- Race conditions and timing attacks
-- Information disclosure through error messages
-- Missing security headers and controls
-- Path traversal and directory listing
-- Dependency and library vulnerabilities
+CRITICAL CHECKS:
+- SQL/Command/XSS injection vulnerabilities
+- Hardcoded credentials, API keys, secrets  
+- Weak authentication, authorization bypasses
+- Input validation failures, missing sanitization
+- Insecure deserialization, file handling
+- Cryptographic weaknesses (weak hashing, etc.)
+- Information disclosure in errors/logs
+- CSRF, session management issues
+- Path traversal, directory listing
 
-BE THOROUGH - examine every line, function, and data flow. Flag even minor security concerns.
+Examine every line for security flaws. Flag all vulnerabilities regardless of size.
 
-Format your response as JSON:
+Format as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed description>", "fix": "<specific solution>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<solution>"}
   ],
-  "summary": "<comprehensive security assessment>",
+  "summary": "<security assessment>",
   "score": <0-100>
 }""",
     },
     "quality": {
         "name": "Quality Checker",
-        "prompt": """COMPREHENSIVE CODE QUALITY ANALYSIS - Find ALL quality issues, however minor.
+        "prompt": """Analyze this code for ALL quality and maintainability issues. Find every problem:
 
-Exhaustively examine this code for quality and maintainability problems. Find EVERY issue:
-- Code complexity: long methods, deep nesting, cyclomatic complexity
-- Error handling: missing try-catch, bare exceptions, silent failures
+KEY AREAS:
+- Code complexity, long methods, deep nesting
+- Error handling: missing try-catch, bare exceptions
 - Code smells: god objects, duplicate code, magic numbers
-- SOLID violations: SRP, OCP, LSP, ISP, DIP breaches  
-- Documentation: missing docstrings, unclear comments, outdated docs
-- Naming: unclear variables, inconsistent conventions, abbreviations
-- Resource management: memory leaks, unclosed files, connection leaks
-- Thread safety: race conditions, shared mutable state
-- Performance anti-patterns: inefficient algorithms, premature optimization
-- Testing issues: untestable code, missing test coverage, flaky tests
-- Architecture problems: tight coupling, circular dependencies
-- Data structure misuse: wrong collections, inefficient operations
-- Code organization: misplaced functionality, unclear separation
+- SOLID violations, poor separation of concerns
+- Missing documentation, unclear naming
+- Resource leaks: unclosed files, memory issues
+- Thread safety: race conditions, shared state
+- Testing problems: untestable code, poor coverage
+- Architecture issues: tight coupling, dependencies
 
-BE METICULOUS - examine every function, class, and code pattern. Report all improvements.
+Examine every function and class. Report all quality improvements needed.
 
-Format your response as JSON:
+Format as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed description>", "fix": "<specific improvement>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<improvement>"}
   ],
-  "summary": "<comprehensive quality assessment>",
+  "summary": "<quality assessment>",
   "score": <0-100>
 }""",
     },
     "performance": {
         "name": "Performance Analyzer",
-        "prompt": """COMPREHENSIVE PERFORMANCE ANALYSIS - Find ALL performance bottlenecks and inefficiencies.
+        "prompt": """Analyze this code for ALL performance issues and bottlenecks. Find every inefficiency:
 
-Exhaustively analyze this code for performance problems. Identify EVERY optimization opportunity:
-- Algorithm complexity: O(n²), O(2^n), nested loops, inefficient sorting
-- Data structure misuse: wrong collections, linear searches, excessive copying
-- Database anti-patterns: N+1 queries, missing indexes, full table scans
-- Memory inefficiencies: memory leaks, excessive allocations, large objects
-- I/O bottlenecks: synchronous operations, no connection pooling, excessive reads
-- Caching misses: repeated calculations, network calls, file operations
-- Resource management: unclosed connections, file handles, thread pools
-- String operations: concatenation in loops, repeated parsing, encoding issues
-- Network inefficiencies: multiple requests, large payloads, no compression
-- Concurrency problems: blocking operations, lock contention, thread creation
-- CPU intensive operations: expensive regex, cryptography, serialization
-- Garbage collection pressure: frequent allocations, large object graphs
-- Startup performance: lazy loading opportunities, initialization overhead
+PERFORMANCE CHECKS:
+- Algorithm complexity: O(n²), O(2^n), nested loops
+- Data structure misuse: wrong collections, linear searches
+- Database problems: N+1 queries, missing indexes
+- Memory issues: leaks, excessive allocations
+- I/O bottlenecks: synchronous ops, no pooling
+- Missing caching: repeated calculations, calls
+- Resource leaks: unclosed connections, files
+- String inefficiencies: concatenation in loops
+- Blocking operations, thread contention
+- Expensive operations: regex, crypto, serialization
 
-BE THOROUGH - profile every operation, loop, and data flow. Find all bottlenecks.
+Examine every loop and operation. Find all optimization opportunities.
 
-Format your response as JSON:
+Format as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed analysis>", "fix": "<specific optimization>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<analysis>", "fix": "<optimization>"}
   ],
-  "summary": "<comprehensive performance assessment>",
+  "summary": "<performance assessment>",
   "score": <0-100>
 }""",
     },
@@ -425,9 +414,9 @@ class CodeReviewEngine:
                         result = self.review_file(filepath, perspective)
                         results.append(result)
                         
-                        # Add longer delay between API calls to avoid rate limits
+                        # Add very long delay between API calls to avoid rate limits
                         import time
-                        time.sleep(3)  # Increased delay for stability
+                        time.sleep(8)  # Very conservative delay for stability
                         
                     except Exception as e:
                         print(f"Review failed for {filepath} ({perspective}): {e}", file=sys.stderr)
