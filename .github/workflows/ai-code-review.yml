@@ -61,6 +61,8 @@ jobs:
           # Download the review tool from this repository
           curl -o ai_review.py https://raw.githubusercontent.com/${{ github.repository }}/main/ai_code_review_tool.py
           python -m py_compile ai_review.py
+          # Install required dependencies
+          pip install urllib3
           
       - name: Configure Git
         run: |
@@ -77,6 +79,19 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
         run: |
+          # Debug: Check what files are available
+          echo "Current directory: $(pwd)"
+          echo "Files in directory: $(ls -la)"
+          
+          # Debug: Check if API key is set
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY is not set"
+            echo "REVIEW_FAILED=2" >> $GITHUB_ENV
+            exit 1
+          else
+            echo "API key is set (length: ${#ANTHROPIC_API_KEY})"
+          fi
+          
           # Run review on changed files
           python ai_review.py \
             --changed \
@@ -85,7 +100,7 @@ jobs:
             --output-file review-comment.md \
             --threshold ${{ vars.AI_REVIEW_THRESHOLD || '70' }} \
             || echo "REVIEW_FAILED=$?" >> $GITHUB_ENV
-            
+          
           # Also generate JSON for artifacts
           python ai_review.py \
             --changed \
