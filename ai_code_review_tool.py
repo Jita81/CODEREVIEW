@@ -20,10 +20,10 @@ import re
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 60000,
+    "max_tokens": 8192,
     "temperature": 0.3,
-    "max_file_size_kb": 1000,
-    "max_workers": 3,
+    "max_file_size_kb": 800,
+    "max_workers": 2,
     "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
 }
