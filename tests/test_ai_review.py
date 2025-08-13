@@ -128,7 +128,7 @@ class TestOutputFormatter:
         comment = OutputFormatter.to_github_comment(report, context)
         
         assert "✅ AI Code Review Results" in comment
-        assert "Score: 85.5/100" in comment
+        assert "**Score:** 85.5/100" in comment
         assert "Security issue found" in comment
         assert "Use parameterized queries" in comment
     
