@@ -1,0 +1,19 @@
+{
+  "threshold": 75,
+  "perspectives": ["security", "quality", "performance"],
+  "max_file_size_kb": 100,
+  "max_workers": 3,
+  "cache_enabled": true,
+  "exclude_patterns": [
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/*.min.js",
+    "**/dist/**",
+    "**/build/**",
+    "**/.git/**"
+  ],
+  "supported_extensions": [
+    ".py", ".js", ".ts", ".java", ".go", 
+    ".rb", ".cpp", ".c", ".cs", ".php"
+  ]
+}
