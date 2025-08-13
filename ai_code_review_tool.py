@@ -21,74 +21,111 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-# Default configuration - Enhanced for better accuracy
+# Default configuration - Round 2: Maximum accuracy optimization
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 16384,  # IMPROVEMENT 1: Doubled token limit for more comprehensive analysis
-    "temperature": 0.3,
-    "max_file_size_kb": 2000,  # IMPROVEMENT 1: Increased file size limit (800KB -> 2MB)
-    "max_workers": 1,  # IMPROVEMENT 2: Reduced workers to avoid rate limiting
+    "max_tokens": 32768,  # ROUND 2-1: Maxed out token limit for deepest analysis
+    "temperature": 0.1,  # ROUND 2-1: Lower temperature for more focused analysis
+    "max_file_size_kb": 3000,  # ROUND 2-1: Further increased file size limit
+    "max_workers": 1,  # Sequential processing to avoid rate limits
     "cache_enabled": True,
     "cache_dir": ".ai_review_cache",
-    "chunk_size_lines": 200,  # IMPROVEMENT 3: Chunk large files for analysis
-    "max_retries": 3,  # IMPROVEMENT 2: Add retry logic
-    "retry_delay": 2,  # IMPROVEMENT 2: Base delay in seconds
+    "chunk_size_lines": 100,  # ROUND 2-3: Smaller chunks for more focused analysis
+    "max_retries": 5,  # ROUND 2-2: More retry attempts
+    "retry_delay": 3,  # ROUND 2-2: Longer base delay
+    "sequential_perspectives": True,  # ROUND 2-2: Process perspectives one by one
 }
 
 # Review perspectives - focused and practical
 PERSPECTIVES = {
     "security": {
         "name": "Security Scanner",
-        "prompt": """Analyze this code for security vulnerabilities. Focus on:
-- Input validation and sanitization
-- Authentication/authorization issues  
-- SQL injection, XSS, CSRF risks
-- Sensitive data exposure
-- Dependency vulnerabilities
+        "prompt": """COMPREHENSIVE SECURITY ANALYSIS - Find ALL vulnerabilities, no matter how small.
+
+Exhaustively analyze this code for security vulnerabilities. Look for EVERY possible issue:
+- Input validation failures (missing sanitization, weak validation)
+- Authentication/authorization bypasses and weaknesses
+- Injection attacks: SQL, command, LDAP, XPath, etc.
+- XSS vulnerabilities: reflected, stored, DOM-based
+- CSRF, clickjacking, and session management issues
+- Sensitive data exposure in logs, errors, or storage
+- Cryptographic weaknesses and hardcoded secrets
+- Insecure deserialization and file handling
+- Race conditions and timing attacks
+- Information disclosure through error messages
+- Missing security headers and controls
+- Path traversal and directory listing
+- Dependency and library vulnerabilities
+
+BE THOROUGH - examine every line, function, and data flow. Flag even minor security concerns.
 
 Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed description>", "fix": "<specific solution>"}
   ],
-  "summary": "<brief overall assessment>",
+  "summary": "<comprehensive security assessment>",
   "score": <0-100>
 }""",
     },
     "quality": {
         "name": "Quality Checker",
-        "prompt": """Review this code for quality and maintainability. Focus on:
-- Code complexity and readability
-- Error handling
-- Documentation and comments
-- DRY/SOLID principles
-- Testing considerations
+        "prompt": """COMPREHENSIVE CODE QUALITY ANALYSIS - Find ALL quality issues, however minor.
+
+Exhaustively examine this code for quality and maintainability problems. Find EVERY issue:
+- Code complexity: long methods, deep nesting, cyclomatic complexity
+- Error handling: missing try-catch, bare exceptions, silent failures
+- Code smells: god objects, duplicate code, magic numbers
+- SOLID violations: SRP, OCP, LSP, ISP, DIP breaches  
+- Documentation: missing docstrings, unclear comments, outdated docs
+- Naming: unclear variables, inconsistent conventions, abbreviations
+- Resource management: memory leaks, unclosed files, connection leaks
+- Thread safety: race conditions, shared mutable state
+- Performance anti-patterns: inefficient algorithms, premature optimization
+- Testing issues: untestable code, missing test coverage, flaky tests
+- Architecture problems: tight coupling, circular dependencies
+- Data structure misuse: wrong collections, inefficient operations
+- Code organization: misplaced functionality, unclear separation
+
+BE METICULOUS - examine every function, class, and code pattern. Report all improvements.
 
 Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed description>", "fix": "<specific improvement>"}
   ],
-  "summary": "<brief overall assessment>",
+  "summary": "<comprehensive quality assessment>",
   "score": <0-100>
 }""",
     },
     "performance": {
         "name": "Performance Analyzer",
-        "prompt": """Analyze this code for performance issues. Focus on:
-- Algorithm complexity
-- Database query efficiency
-- Memory usage
-- Caching opportunities
-- Resource leaks
+        "prompt": """COMPREHENSIVE PERFORMANCE ANALYSIS - Find ALL performance bottlenecks and inefficiencies.
+
+Exhaustively analyze this code for performance problems. Identify EVERY optimization opportunity:
+- Algorithm complexity: O(n²), O(2^n), nested loops, inefficient sorting
+- Data structure misuse: wrong collections, linear searches, excessive copying
+- Database anti-patterns: N+1 queries, missing indexes, full table scans
+- Memory inefficiencies: memory leaks, excessive allocations, large objects
+- I/O bottlenecks: synchronous operations, no connection pooling, excessive reads
+- Caching misses: repeated calculations, network calls, file operations
+- Resource management: unclosed connections, file handles, thread pools
+- String operations: concatenation in loops, repeated parsing, encoding issues
+- Network inefficiencies: multiple requests, large payloads, no compression
+- Concurrency problems: blocking operations, lock contention, thread creation
+- CPU intensive operations: expensive regex, cryptography, serialization
+- Garbage collection pressure: frequent allocations, large object graphs
+- Startup performance: lazy loading opportunities, initialization overhead
+
+BE THOROUGH - profile every operation, loop, and data flow. Find all bottlenecks.
 
 Format your response as JSON:
 {
   "issues": [
-    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<description>", "fix": "<suggestion>"}
+    {"line": <number>, "severity": "HIGH|MEDIUM|LOW", "message": "<detailed analysis>", "fix": "<specific optimization>"}
   ],
-  "summary": "<brief overall assessment>",
+  "summary": "<comprehensive performance assessment>",
   "score": <0-100>
 }""",
     },
@@ -372,21 +409,39 @@ class CodeReviewEngine:
     def review_files(
         self, files: List[str], perspectives: List[str] = None
     ) -> List[Dict]:
-        """Review multiple files from multiple perspectives"""
+        """Review multiple files from multiple perspectives with sequential processing"""
         if perspectives is None:
             perspectives = list(PERSPECTIVES.keys())
 
         results = []
-        tasks = [(f, p) for f in files for p in perspectives]
-
-        with ThreadPoolExecutor(max_workers=CONFIG["max_workers"]) as executor:
-            futures = [executor.submit(self.review_file, f, p) for f, p in tasks]
-            for future in futures:
-                try:
-                    result = future.result(timeout=60)
-                    results.append(result)
-                except Exception as e:
-                    print(f"Review failed: {e}", file=sys.stderr)
+        
+        # ROUND 2-2: Sequential processing to avoid rate limiting
+        if CONFIG.get("sequential_perspectives", False):
+            print("Using sequential perspective processing to maximize accuracy", file=sys.stderr)
+            for filepath in files:
+                for perspective in perspectives:
+                    try:
+                        print(f"Analyzing {filepath} from {perspective} perspective...", file=sys.stderr)
+                        result = self.review_file(filepath, perspective)
+                        results.append(result)
+                        
+                        # Add delay between API calls to be respectful
+                        import time
+                        time.sleep(1)
+                        
+                    except Exception as e:
+                        print(f"Review failed for {filepath} ({perspective}): {e}", file=sys.stderr)
+        else:
+            # Original parallel processing
+            tasks = [(f, p) for f in files for p in perspectives]
+            with ThreadPoolExecutor(max_workers=CONFIG["max_workers"]) as executor:
+                futures = [executor.submit(self.review_file, f, p) for f, p in tasks]
+                for future in futures:
+                    try:
+                        result = future.result(timeout=120)  # Increased timeout
+                        results.append(result)
+                    except Exception as e:
+                        print(f"Review failed: {e}", file=sys.stderr)
 
         return results
 
