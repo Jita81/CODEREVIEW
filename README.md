@@ -9,6 +9,7 @@ An intelligent, AI-powered code review tool that integrates seamlessly with GitH
 ## 🚀 Features
 
 - **Multi-Perspective Analysis**: Reviews code from security, performance, and quality perspectives
+- **Latest AI Model**: Uses Claude 4.1 Sonnet with 60k token capacity for comprehensive analysis
 - **GitHub Actions Integration**: Automatic reviews on pull requests
 - **Intelligent Caching**: Reduces API costs and review time
 - **Parallel Processing**: Fast reviews for large codebases
@@ -54,7 +55,7 @@ Create a pull request with some code changes. The AI review will automatically r
 ## 📋 Requirements
 
 - Python 3.11+
-- Anthropic API key
+- Anthropic API key (Claude 4.1 Sonnet access)
 - GitHub repository with Actions enabled
 
 ## 🔧 Installation
