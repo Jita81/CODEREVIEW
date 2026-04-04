@@ -37,6 +37,30 @@ CONFIG = {
     "sequential_perspectives": False,  # ROUND 1: Original parallel processing
 }
 
+
+def _load_config():
+    """Load config from .github/ai-review-config.json if it exists."""
+    config_path = Path(".github/ai-review-config.json")
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: failed to load {config_path}: {e}", file=sys.stderr)
+    return {}
+
+
+_FILE_CONFIG = _load_config()
+CONFIG.update({k: v for k, v in _FILE_CONFIG.items() if k in CONFIG})
+
+
+def _get_threshold():
+    """Return the review threshold from env var, config file, or default (70)."""
+    env_val = os.environ.get("AI_REVIEW_THRESHOLD")
+    if env_val:
+        return float(env_val)
+    return float(_FILE_CONFIG.get("threshold", 70))
+
 # Review perspectives - focused and practical
 PERSPECTIVES = {
     "security": {
@@ -183,27 +207,28 @@ class LLMReviewer:
                     data = json.loads(response.data)
                     content = data["content"][0]["text"]
 
-                    # Extract JSON from response
                     json_match = re.search(r"\{.*\}", content, re.DOTALL)
                     if json_match:
                         return json.loads(json_match.group())
 
-                    return {"issues": [], "summary": "Failed to parse", "score": 50}
+                    raise RuntimeError("API returned 200 but response contained no valid JSON")
                 
                 elif response.status == 529:  # Rate limited
                     if attempt < CONFIG["max_retries"] - 1:
-                        delay = CONFIG["retry_delay"] * (2 ** attempt)  # Exponential backoff
+                        delay = CONFIG["retry_delay"] * (2 ** attempt)
                         print(f"Rate limited, retrying in {delay}s (attempt {attempt + 1})", file=sys.stderr)
                         import time
                         time.sleep(delay)
                         continue
                     else:
-                        return {"issues": [], "summary": f"API rate limited after {CONFIG['max_retries']} attempts", "score": 50}
+                        raise RuntimeError(f"API rate limited after {CONFIG['max_retries']} attempts")
                 else:
-                    raise Exception(f"API error: {response.status}")
+                    raise RuntimeError(f"API error: {response.status}")
 
-            except json.JSONDecodeError:
-                return {"issues": [], "summary": "Invalid JSON response", "score": 50}
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"API review call failed: invalid JSON response: {e}") from e
+            except RuntimeError:
+                raise
             except Exception as e:
                 if attempt < CONFIG["max_retries"] - 1:
                     delay = CONFIG["retry_delay"] * (2 ** attempt)
@@ -212,10 +237,9 @@ class LLMReviewer:
                     time.sleep(delay)
                     continue
                 else:
-                    print(f"Review error after {CONFIG['max_retries']} attempts: {e}", file=sys.stderr)
-                    return {"issues": [], "summary": str(e), "score": 50}
+                    raise RuntimeError(f"API review call failed after {CONFIG['max_retries']} attempts: {e}") from e
 
-        return {"issues": [], "summary": "All retry attempts failed", "score": 50}
+        raise RuntimeError("All retry attempts failed")
 
 
 class Cache:
@@ -356,7 +380,7 @@ class CodeReviewEngine:
                 summaries.append(f"Chunk {i+1}: {chunk_result['summary']}")
         
         # Aggregate final result
-        avg_score = sum(all_scores) / len(all_scores) if all_scores else 50
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0
         combined_summary = " | ".join(summaries) if summaries else "Chunked analysis completed"
         
         return {
@@ -434,7 +458,8 @@ class CodeReviewEngine:
                 issue["perspective"] = result.get("perspective", "unknown")
                 all_issues.append(issue)
 
-            scores.append(result.get("score", 50))
+            if result.get("score") is not None:
+                scores.append(result["score"])
             if result.get("summary"):
                 summaries.append(
                     {
@@ -475,7 +500,8 @@ class OutputFormatter:
             return f"❌ **Review Failed:** {report.get('error', 'Unknown error')}"
 
         score = report["average_score"]
-        emoji = "✅" if score >= 70 else "⚠️" if score >= 50 else "❌"
+        threshold = _get_threshold()
+        emoji = "✅" if score >= threshold else "⚠️" if score >= 50 else "❌"
 
         comment = f"""## {emoji} AI Code Review Results
 
@@ -581,8 +607,11 @@ class OutputFormatter:
         return md
 
     @staticmethod
-    def to_exit_code(report: Dict, threshold: int = 70) -> int:
+    def to_exit_code(report: Dict, threshold: int = None) -> int:
         """Convert to exit code for CI/CD"""
+        if threshold is None:
+            threshold = _get_threshold()
+
         if not report.get("success"):
             return 2  # Error
 
@@ -630,7 +659,7 @@ Examples:
     )
     parser.add_argument("--output-file", help="Save output to file")
     parser.add_argument(
-        "--threshold", type=int, default=70, help="Quality threshold (0-100)"
+        "--threshold", type=int, default=None, help="Quality threshold (0-100, default from env/config/70)"
     )
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
 
@@ -708,14 +737,15 @@ Examples:
         print(output)
 
     # Exit with appropriate code
-    exit_code = formatter.to_exit_code(report, args.threshold)
+    effective_threshold = args.threshold if args.threshold is not None else _get_threshold()
+    exit_code = formatter.to_exit_code(report, effective_threshold)
     if exit_code != 0:
         print(
             f"\n{'ERROR' if exit_code == 2 else 'FAILURE'}: ", file=sys.stderr, end=""
         )
         if exit_code == 1:
             print(
-                f"Quality score {report['average_score']} below threshold {args.threshold}",
+                f"Quality score {report['average_score']} below threshold {effective_threshold}",
                 file=sys.stderr,
             )
         else:
