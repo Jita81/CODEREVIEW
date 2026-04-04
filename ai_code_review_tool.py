@@ -21,6 +21,23 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import re
 
+class ReviewAPIError(Exception):
+    """Raised when an API call fails during code review."""
+    pass
+
+
+def load_config():
+    """Load configuration from .github/ai-review-config.json if present."""
+    config_path = Path(".github/ai-review-config.json")
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
 # Default configuration - ROUND 1 PROVEN: Best performing setup (28% detection)
 CONFIG = {
     "api_url": "https://api.anthropic.com/v1/messages",
@@ -36,6 +53,26 @@ CONFIG = {
     "retry_delay": 2,  # ROUND 1: Base delay in seconds
     "sequential_perspectives": False,  # ROUND 1: Original parallel processing
 }
+
+# Load project-level config and merge (project config overrides defaults)
+_file_config = load_config()
+for _key, _value in _file_config.items():
+    if _key in CONFIG:
+        CONFIG[_key] = _value
+
+
+def get_threshold():
+    """Get review threshold from env var, config file, or default.
+
+    Priority: AI_REVIEW_THRESHOLD env var > config file 'threshold' > 70.
+    """
+    env_threshold = os.getenv("AI_REVIEW_THRESHOLD")
+    if env_threshold:
+        return float(env_threshold)
+    if "threshold" in _file_config:
+        return float(_file_config["threshold"])
+    return 70.0
+
 
 # Review perspectives - focused and practical
 PERSPECTIVES = {
@@ -183,27 +220,28 @@ class LLMReviewer:
                     data = json.loads(response.data)
                     content = data["content"][0]["text"]
 
-                    # Extract JSON from response
                     json_match = re.search(r"\{.*\}", content, re.DOTALL)
                     if json_match:
                         return json.loads(json_match.group())
 
-                    return {"issues": [], "summary": "Failed to parse", "score": 50}
+                    raise ReviewAPIError("Failed to parse JSON from API response")
                 
                 elif response.status == 529:  # Rate limited
                     if attempt < CONFIG["max_retries"] - 1:
-                        delay = CONFIG["retry_delay"] * (2 ** attempt)  # Exponential backoff
+                        delay = CONFIG["retry_delay"] * (2 ** attempt)
                         print(f"Rate limited, retrying in {delay}s (attempt {attempt + 1})", file=sys.stderr)
                         import time
                         time.sleep(delay)
                         continue
                     else:
-                        return {"issues": [], "summary": f"API rate limited after {CONFIG['max_retries']} attempts", "score": 50}
+                        raise ReviewAPIError(f"API rate limited after {CONFIG['max_retries']} attempts")
                 else:
-                    raise Exception(f"API error: {response.status}")
+                    raise ReviewAPIError(f"API error: {response.status}")
 
-            except json.JSONDecodeError:
-                return {"issues": [], "summary": "Invalid JSON response", "score": 50}
+            except ReviewAPIError:
+                raise
+            except json.JSONDecodeError as e:
+                raise ReviewAPIError(f"Invalid JSON response from API: {e}") from e
             except Exception as e:
                 if attempt < CONFIG["max_retries"] - 1:
                     delay = CONFIG["retry_delay"] * (2 ** attempt)
@@ -212,10 +250,9 @@ class LLMReviewer:
                     time.sleep(delay)
                     continue
                 else:
-                    print(f"Review error after {CONFIG['max_retries']} attempts: {e}", file=sys.stderr)
-                    return {"issues": [], "summary": str(e), "score": 50}
+                    raise ReviewAPIError(f"API call failed after {CONFIG['max_retries']} attempts: {e}") from e
 
-        return {"issues": [], "summary": "All retry attempts failed", "score": 50}
+        raise ReviewAPIError("All retry attempts failed")
 
 
 class Cache:
@@ -356,7 +393,7 @@ class CodeReviewEngine:
                 summaries.append(f"Chunk {i+1}: {chunk_result['summary']}")
         
         # Aggregate final result
-        avg_score = sum(all_scores) / len(all_scores) if all_scores else 50
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0
         combined_summary = " | ".join(summaries) if summaries else "Chunked analysis completed"
         
         return {
@@ -434,7 +471,8 @@ class CodeReviewEngine:
                 issue["perspective"] = result.get("perspective", "unknown")
                 all_issues.append(issue)
 
-            scores.append(result.get("score", 50))
+            if "score" in result:
+                scores.append(result["score"])
             if result.get("summary"):
                 summaries.append(
                     {
@@ -475,7 +513,8 @@ class OutputFormatter:
             return f"❌ **Review Failed:** {report.get('error', 'Unknown error')}"
 
         score = report["average_score"]
-        emoji = "✅" if score >= 70 else "⚠️" if score >= 50 else "❌"
+        threshold = get_threshold()
+        emoji = "✅" if score >= threshold else "⚠️" if score >= (threshold * 0.7) else "❌"
 
         comment = f"""## {emoji} AI Code Review Results
 
@@ -581,8 +620,10 @@ class OutputFormatter:
         return md
 
     @staticmethod
-    def to_exit_code(report: Dict, threshold: int = 70) -> int:
+    def to_exit_code(report: Dict, threshold: float = None) -> int:
         """Convert to exit code for CI/CD"""
+        if threshold is None:
+            threshold = get_threshold()
         if not report.get("success"):
             return 2  # Error
 
@@ -630,7 +671,7 @@ Examples:
     )
     parser.add_argument("--output-file", help="Save output to file")
     parser.add_argument(
-        "--threshold", type=int, default=70, help="Quality threshold (0-100)"
+        "--threshold", type=float, default=None, help="Quality threshold (0-100)"
     )
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
 
@@ -707,15 +748,18 @@ Examples:
     else:
         print(output)
 
+    # Resolve threshold: CLI flag > env var > config file > default (70)
+    threshold = args.threshold if args.threshold is not None else get_threshold()
+
     # Exit with appropriate code
-    exit_code = formatter.to_exit_code(report, args.threshold)
+    exit_code = formatter.to_exit_code(report, threshold)
     if exit_code != 0:
         print(
             f"\n{'ERROR' if exit_code == 2 else 'FAILURE'}: ", file=sys.stderr, end=""
         )
         if exit_code == 1:
             print(
-                f"Quality score {report['average_score']} below threshold {args.threshold}",
+                f"Quality score {report['average_score']} below threshold {threshold}",
                 file=sys.stderr,
             )
         else:
