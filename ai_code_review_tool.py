@@ -35,7 +35,35 @@ CONFIG = {
     "max_retries": 3,  # ROUND 1: Add retry logic
     "retry_delay": 2,  # ROUND 1: Base delay in seconds
     "sequential_perspectives": False,  # ROUND 1: Original parallel processing
+    "threshold": 70,
 }
+
+
+def load_config():
+    """Load configuration from .github/ai-review-config.json if present.
+
+    File values are merged into CONFIG, then env vars override where applicable.
+    """
+    config_path = Path(".github/ai-review-config.json")
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: failed to load config file: {e}", file=sys.stderr)
+            file_config = {}
+    else:
+        file_config = {}
+
+    for key, value in file_config.items():
+        if key in CONFIG:
+            CONFIG[key] = value
+
+    threshold = int(os.getenv(
+        "AI_REVIEW_THRESHOLD",
+        file_config.get("threshold", CONFIG["threshold"]),
+    ))
+    CONFIG["threshold"] = threshold
 
 # Review perspectives - focused and practical
 PERSPECTIVES = {
@@ -183,27 +211,39 @@ class LLMReviewer:
                     data = json.loads(response.data)
                     content = data["content"][0]["text"]
 
-                    # Extract JSON from response
                     json_match = re.search(r"\{.*\}", content, re.DOTALL)
                     if json_match:
                         return json.loads(json_match.group())
 
-                    return {"issues": [], "summary": "Failed to parse", "score": 50}
-                
+                    return {
+                        "issues": [], "summary": "Failed to parse LLM response",
+                        "score": None, "success": False,
+                        "error": "Could not extract JSON from LLM response",
+                    }
+
                 elif response.status == 529:  # Rate limited
                     if attempt < CONFIG["max_retries"] - 1:
-                        delay = CONFIG["retry_delay"] * (2 ** attempt)  # Exponential backoff
+                        delay = CONFIG["retry_delay"] * (2 ** attempt)
                         print(f"Rate limited, retrying in {delay}s (attempt {attempt + 1})", file=sys.stderr)
                         import time
                         time.sleep(delay)
                         continue
                     else:
-                        return {"issues": [], "summary": f"API rate limited after {CONFIG['max_retries']} attempts", "score": 50}
+                        return {
+                            "issues": [],
+                            "summary": f"API rate limited after {CONFIG['max_retries']} attempts",
+                            "score": None, "success": False,
+                            "error": f"Rate limited after {CONFIG['max_retries']} attempts",
+                        }
                 else:
                     raise Exception(f"API error: {response.status}")
 
             except json.JSONDecodeError:
-                return {"issues": [], "summary": "Invalid JSON response", "score": 50}
+                return {
+                    "issues": [], "summary": "Invalid JSON response",
+                    "score": None, "success": False,
+                    "error": "Invalid JSON in API response",
+                }
             except Exception as e:
                 if attempt < CONFIG["max_retries"] - 1:
                     delay = CONFIG["retry_delay"] * (2 ** attempt)
@@ -213,9 +253,17 @@ class LLMReviewer:
                     continue
                 else:
                     print(f"Review error after {CONFIG['max_retries']} attempts: {e}", file=sys.stderr)
-                    return {"issues": [], "summary": str(e), "score": 50}
+                    return {
+                        "issues": [], "summary": str(e),
+                        "score": None, "success": False,
+                        "error": str(e),
+                    }
 
-        return {"issues": [], "summary": "All retry attempts failed", "score": 50}
+        return {
+            "issues": [], "summary": "All retry attempts failed",
+            "score": None, "success": False,
+            "error": "All retry attempts exhausted",
+        }
 
 
 class Cache:
@@ -349,14 +397,15 @@ class CodeReviewEngine:
                         issue["line"] = issue["line"] + (i * chunk_size)
                     all_issues.append(issue)
             
-            if chunk_result.get("score"):
-                all_scores.append(chunk_result["score"])
+            score = chunk_result.get("score")
+            if score is not None:
+                all_scores.append(score)
             
             if chunk_result.get("summary"):
                 summaries.append(f"Chunk {i+1}: {chunk_result['summary']}")
         
         # Aggregate final result
-        avg_score = sum(all_scores) / len(all_scores) if all_scores else 50
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else None
         combined_summary = " | ".join(summaries) if summaries else "Chunked analysis completed"
         
         return {
@@ -434,7 +483,9 @@ class CodeReviewEngine:
                 issue["perspective"] = result.get("perspective", "unknown")
                 all_issues.append(issue)
 
-            scores.append(result.get("score", 50))
+            score = result.get("score")
+            if score is not None:
+                scores.append(score)
             if result.get("summary"):
                 summaries.append(
                     {
@@ -581,8 +632,10 @@ class OutputFormatter:
         return md
 
     @staticmethod
-    def to_exit_code(report: Dict, threshold: int = 70) -> int:
+    def to_exit_code(report: Dict, threshold: int = None) -> int:
         """Convert to exit code for CI/CD"""
+        if threshold is None:
+            threshold = CONFIG["threshold"]
         if not report.get("success"):
             return 2  # Error
 
@@ -594,6 +647,8 @@ class OutputFormatter:
 
 def main():
     """CLI entry point"""
+    load_config()
+
     parser = argparse.ArgumentParser(
         description="AI Code Review Tool for GitHub Actions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -630,7 +685,7 @@ Examples:
     )
     parser.add_argument("--output-file", help="Save output to file")
     parser.add_argument(
-        "--threshold", type=int, default=70, help="Quality threshold (0-100)"
+        "--threshold", type=int, default=None, help="Quality threshold (0-100, default from config)"
     )
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
 
@@ -708,14 +763,15 @@ Examples:
         print(output)
 
     # Exit with appropriate code
-    exit_code = formatter.to_exit_code(report, args.threshold)
+    threshold = args.threshold if args.threshold is not None else CONFIG["threshold"]
+    exit_code = formatter.to_exit_code(report, threshold)
     if exit_code != 0:
         print(
             f"\n{'ERROR' if exit_code == 2 else 'FAILURE'}: ", file=sys.stderr, end=""
         )
         if exit_code == 1:
             print(
-                f"Quality score {report['average_score']} below threshold {args.threshold}",
+                f"Quality score {report['average_score']} below threshold {threshold}",
                 file=sys.stderr,
             )
         else:
